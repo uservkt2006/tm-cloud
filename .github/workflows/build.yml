@@ -1,0 +1,209 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 3.6.0)'
+        required: true
+        default: '3.6.0'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          # Also create venv for local testing if needed
+          if [ ! -d backend/.venv ]; then
+            cd backend && python -m venv --without-pip .venv && cd ..
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Bundle backend scripts
+        run: bash scripts/bundle-backend.sh
+
+      - name: Build frontend
+        run: |
+          rm -rf frontend/dist frontend/_backend
+          cd frontend && npm run build
+
+      - name: Copy dist outside frontend/ to avoid recursive copy
+        run: |
+          rm -rf build/frontend-dist
+          mkdir -p build
+          cp -rv frontend/dist build/frontend-dist 2>&1
+          echo "✓ Copied $(find build/frontend-dist -type f | wc -l) files to build/frontend-dist"
+          ls build/frontend-dist/
+          # Empty frontend/dist so electron-builder doesn't see it as source
+          rm -rf frontend/dist
+          mkdir -p frontend/dist
+          touch frontend/dist/.gitkeep
+
+      - name: Bundle Python interpreter (Linux venv)
+        run: python3 scripts/bundle-python.py
+
+      - name: Update version in backend
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          # Replace any "3.X.Y" version string with $VERSION (catches all 4 places)
+          sed -i -E "s/\"3\.[0-9]+\.[0-9]+\"/\"$VERSION\"/g" backend/app.py
+          sed -i -E "s/\"version\": \"3\.[0-9]+\.[0-9]+\"/\"version\": \"$VERSION\"/" frontend/package.json
+          echo "--- After update ---"
+          grep -E "3\.[0-9]+\.[0-9]+" backend/app.py | head -10
+
+      - name: Bundle backend scripts (re-run with updated version)
+        run: bash scripts/bundle-backend.sh
+
+      - name: Copy dist again with updated version
+        run: |
+          # Re-copy build/frontend-dist (which has our built frontend) outside of frontend/
+          # to avoid electron-builder recursive copy into app.asar
+          rm -rf build/frontend-dist
+          mkdir -p build
+          # Now build the frontend again with updated version (re-build)
+          cd frontend && npm run build && cd ..
+          cp -rv frontend/dist build/frontend-dist 2>&1
+          # Empty frontend/dist so electron-builder doesn't see it as source
+          rm -rf frontend/dist
+          mkdir -p frontend/dist
+          touch frontend/dist/.gitkeep
+          echo "✓ After re-copy: $(find build/frontend-dist -type f | wc -l) files"
+          ls build/frontend-dist/
+
+      - name: Update version in backend (run again after bundling)
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          # The bundled copy is in frontend/_backend - update it too
+          sed -i -E "s/\"3\.[0-9]+\.[0-9]+\"/\"$VERSION\"/g" frontend/_backend/app.py
+          echo "--- After update ---"
+          grep -E "3\.[0-9]+\.[0-9]+" frontend/_backend/app.py | head -10
+
+      - name: Build Linux packages (AppImage + .deb)
+        run: |
+          # Clean previous build outputs to avoid bloating app.asar
+          rm -rf frontend/dist/linux-unpacked
+          rm -f frontend/dist/*.deb frontend/dist/*.AppImage frontend/dist/*.exe
+          cd frontend
+          npx electron-builder --linux AppImage deb --publish never
+          cd ..
+
+      - name: Generate checksums
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          sha256sum frontend/dist/*.AppImage frontend/dist/*.deb > checksums.txt
+
+      - name: Upload Linux assets
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            frontend/dist/*.AppImage
+            frontend/dist/*.deb
+            checksums.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build frontend
+        run: |
+          rm -rf frontend/dist frontend/_backend
+          cd frontend && npm run build
+
+      - name: Update version in backend
+        run: |
+          $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
+          (Get-Content backend/app.py) -replace '"3\.\d+\.\d+"', "`"$ver`"" | Set-Content backend/app.py
+          (Get-Content frontend/package.json) -replace '"version":\s*"3\.\d+\.\d+"', "`"version`": `"$ver`"" | Set-Content frontend/package.json
+
+      - name: Bundle backend scripts
+        run: bash scripts/bundle-backend.sh
+
+      - name: Download Windows embed Python
+        shell: bash
+        run: |
+          if [ ! -d build/python-embed-amd64 ]; then
+            mkdir -p build
+            curl -sL -o /tmp/python-embed.zip https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip
+            mkdir -p build/python-embed-amd64
+            unzip -q /tmp/python-embed.zip -d build/python-embed-amd64
+            # Uncomment site-packages
+            sed -i 's/^#import site/import site/' build/python-embed-amd64/python311._pth
+            echo "Lib\\site-packages" >> build/python-embed-amd64/python311._pth
+            rm /tmp/python-embed.zip
+          fi
+          echo "✓ Windows Python ready"
+
+      - name: Update version in backend
+        run: |
+          $ver = "${{ github.event.inputs.version || github.ref_name }}".TrimStart('v')
+          (Get-Content backend/app.py) -replace '"3\.\d+\.\d+"', "`"$ver`"" | Set-Content backend/app.py
+          (Get-Content frontend/package.json) -replace '"version":\s*"3\.\d+\.\d+"', "`"version`": `"$ver`"" | Set-Content frontend/package.json
+
+      - name: Build Windows executable
+        run: |
+          # Clean previous build outputs
+          rm -rf frontend/dist/win-unpacked
+          rm -f frontend/dist/*.exe frontend/dist/*.AppImage frontend/dist/*.deb
+          cd frontend
+          npx electron-builder --win nsis --publish never
+          cd ..
+
+      - name: Generate checksums
+        run: |
+          Get-ChildItem frontend/dist/*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Out-File -FilePath checksums.txt -Encoding utf8
+
+      - name: Upload Windows asset
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            frontend/dist/*.exe
+            checksums.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

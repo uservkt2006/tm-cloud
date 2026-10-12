@@ -1,0 +1,77 @@
+{
+  "name": "tm-cloud",
+  "version": "0.1.0",
+  "description": "TM Cloud - unified OneDrive + Google Drive manager for Ubuntu",
+  "main": "electron/main.cjs",
+  "author": "Võ Khắc Tâm <vokhactam01@gmail.com>",
+  "homepage": "https://tmtool.click",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:electron\"",
+    "dev:frontend": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && electron .",
+    "build": "vite build && rm -rf ../build/frontend-dist && mkdir -p ../build/frontend-dist && cp -r dist/. ../build/frontend-dist/",
+    "bundle-backend": "rm -rf _backend && cp -r ../backend _backend && rm -rf _backend/.venv _backend/__pycache__",
+    "package:linux": "npm run build && npm run bundle-backend && electron-builder --linux deb AppImage",
+    "package:win": "npm run build && npm run bundle-backend && electron-builder --win nsis",
+    "package:all": "npm run build && npm run bundle-backend && electron-builder -mwl deb AppImage nsis"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.4.0",
+    "vite": "^5.0.0",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "lucide-react": "^0.294.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "build": {
+    "appId": "com.tmtool.tmcloud",
+    "productName": "tm-cloud",
+    "executableName": "tm-cloud",
+    "files": [
+      "electron/**/*",
+      "dist/assets/**/*",
+      "dist/index.html",
+      "../build/icons/**/*",
+      "../build/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/python-linux-x64",
+        "to": "python-linux",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../build/icons",
+        "to": "icons",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../build/frontend-dist",
+        "to": "frontend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "_backend",
+        "to": "_backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "linux": {
+      "target": ["deb", "AppImage"],
+      "category": "Utility",
+      "icon": "../build/icon.png"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "../build/icon.png"
+    }
+  }
+}

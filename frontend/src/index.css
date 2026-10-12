@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { margin: 0; background: #0c0e12; color: #cbd5e1; }
+
+/* Light theme overrides */
+html.light body { background: #f5f7fa; color: #1e293b; }
+html.light .bg-panel { background: #ffffff; border-color: #e2e8f0; }
+html.light .bg-panel\/95 { background-color: rgba(255, 255, 255, 0.95); }
+html.light .bg-\[\#0c0e12\] { background-color: #ffffff !important; }
+html.light .bg-\[\#11141a\] { background-color: #f1f5f9 !important; }
+html.light .text-slate-200 { color: #1e293b !important; }
+html.light .text-slate-300 { color: #334155 !important; }
+html.light .text-slate-400 { color: #64748b !important; }
+html.light .text-slate-500 { color: #94a3b8 !important; }
+html.light .text-slate-600 { color: #94a3b8 !important; }
+html.light .border-line { border-color: #e2e8f0 !important; }
+html.light .border-line\/40 { border-color: rgba(226, 232, 240, 0.4) !important; }
+html.light .border-line\/50 { border-color: rgba(226, 232, 240, 0.5) !important; }
+html.light .hover\:bg-\[\#11141a\]:hover { background-color: #f1f5f9 !important; }
+html.light .bg-slate-800 { background-color: #e2e8f0 !important; }
+html.light .bg-slate-700 { background-color: #cbd5e1 !important; }
+html.light .text-slate-600 { color: #475569 !important; }
+html.light .divide-line\/40 > * + * { border-color: rgba(226, 232, 240, 0.4) !important; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #1f2530; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3340; }
+html.light ::-webkit-scrollbar-thumb { background: #cbd5e1; }
+html.light ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+button { cursor: pointer; }
+input, button, select { font-family: inherit; }
+.row:hover { background: #11141a; }
+.row.selected { background: #142a4d; }
+html.light .row:hover { background: #f1f5f9; }
+html.light .row.selected { background: #dbeafe; }

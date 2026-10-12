@@ -1,0 +1,348 @@
+import React, { useState, useEffect, useCallback } from 'react'
+import FolderTree from './FolderTree'
+import EmailList from './EmailList'
+import EmailDetail from './EmailDetail'
+import ComposeModal from './ComposeModal'
+import ContextMenu from './ContextMenu'
+import ReadingModal from './ReadingModal'
+import SearchFolderModal from './SearchFolderModal'
+import RuleModal from './RuleModal'
+import ThreadView from './ThreadView'
+import { Group, Panel, Separator, useDefaultLayout } from 'react-resizable-panels'
+import { Archive, Trash2, Star, Mail, MailOpen, Flag, Tag, Share2, CornerUpLeft, CornerUpRight, FolderInput, CheckCheck, Zap, Copy, Search, UserPlus } from 'lucide-react'
+import { api } from '../api'
+import { getDensity, getReadingPane } from '../theme'
+
+const senderEmail = (e) => (e.from || '').match(/<([^>]+)>/)?.[1] || ''
+const senderName = (e) => (e.from || '').split('<')[0].trim() || senderEmail(e)
+
+export default function MailView({ user, catMeta: catMetaProp, onOpenSettings }) {
+  const [catMeta, setCatMeta] = useState(catMetaProp)
+  useEffect(() => { if (catMetaProp) setCatMeta(catMetaProp); else api.categories().then(setCatMeta).catch(() => {}) }, [catMetaProp])
+  const [tree, setTree] = useState([])
+  const [activeFolder, setActiveFolder] = useState(null)
+  const [emails, setEmails] = useState([])
+  const [selected, setSelected] = useState(null)
+  const [conversation, setConversation] = useState(true)
+  const [search, setSearch] = useState('')
+  const [category, setCategory] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [compose, setCompose] = useState(null)
+  const [ctx, setCtx] = useState(null)          // {email, x, y}
+  const [searchFolders, setSearchFolders] = useState([])
+  const [sfModal, setSfModal] = useState(false)
+  const [ruleFor, setRuleFor] = useState(null)   // email used to prefill a new rule
+  const [ruleFolder, setRuleFolder] = useState(null)  // folder targeted by "create rule for this folder"
+  const [threadView, setThreadView] = useState(false)   // conversation mode in reading pane
+  const [readModal, setReadModal] = useState(false)
+  const outerLayout = useDefaultLayout({ id: 'mm-mail', storage: window.localStorage, panelIds: ['folders', 'main'] })
+  const innerLayout = useDefaultLayout({ id: 'mm-main', storage: window.localStorage, panelIds: ['list', 'detail'] })
+  const [toast, setToast] = useState(null)
+  const [density, setDensity] = useState(getDensity())
+  const [pane, setPane] = useState(getReadingPane())   // right | bottom | off
+
+  const showToast = (msg, action) => {
+    setToast({ msg, action })
+    setTimeout(() => setToast(null), 5000)
+  }
+
+  const copyMail = async (e) => {
+    const txt = `Từ: ${e.from}\nTới: ${e.to || ''}\nCc: ${e.cc || ''}\nChủ đề: ${e.subject}\nNgày: ${e.date}\n\n${e.body || ''}`
+    try { await navigator.clipboard.writeText(txt); showToast('Đã copy nội dung thư vào clipboard') }
+    catch { showToast('Không copy được (clipboard bị chặn)') }
+  }
+
+  const loadSf = useCallback(() => { api.searchFolders().then(setSearchFolders).catch(() => {}) }, [])
+
+  const loadTree = useCallback(async () => {
+    const d = await api.folders()
+    setTree(d.tree)
+    if (!activeFolder && d.tree.length) {
+      const inbox = d.tree.find(f => f.type === 'inbox')
+      if (inbox) setActiveFolder(inbox)
+    }
+  }, [activeFolder])
+
+  const loadEmails = useCallback(async () => {
+    if (!activeFolder) return
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ folder: String(activeFolder.id), conversation: String(conversation) })
+      if (search) params.append('search', search)
+      if (category) params.append('category', category)
+      const d = await api.emails(params)
+      setEmails(d.emails)
+    } finally { setLoading(false) }
+  }, [activeFolder, conversation, search, category])
+
+  useEffect(() => { loadTree(); loadSf() }, [])
+  const deb = search ? 200 : 0   // debounce typing; instant when cleared
+  useEffect(() => {
+    const t = setTimeout(loadEmails, deb)
+    return () => clearTimeout(t)
+  }, [loadEmails, deb])
+
+
+  useEffect(() => {
+    const bump = () => { setDensity(getDensity()); setPane(getReadingPane()); loadEmails(); loadTree() }
+    const newMail = () => setCompose({ mode: 'new' })
+    const ruleForFolder = (e) => setRuleFolder(e.detail)
+    // Outlook search: click a mail in the global search dropdown inside TopBar;
+    // that mail may not be in the currently open folder. Fetch its full object,
+    // switch the list to its folder, highlight it and open it in the reading pane.
+    const handleOpenMail = async (e) => {
+      const m = e.detail
+      try {
+        const full = await api.email(m.id)
+        const target = full.message || full
+        // if the list isn't showing this mail's folder, jump the list there first
+        // (and update the tree's active state) so the highlight is visible
+        const curFid = activeFolder?.id
+        if (curFid != null && String(full.folder_id ?? target.folder_id) !== String(curFid)) {
+          const t = await api.folders()
+          let found = null
+          const walk = (nodes) => nodes.forEach(n => {
+            if (String(n.id) === String(full.folder_id ?? target.folder_id)) found = n
+            else if (n.children) walk(n.children)
+          })
+          walk(t.tree || [])
+          if (found) { setActiveFolder(found); setTree(t.tree) }
+        }
+        // render the mail immediately even while its folder's list loads
+        setSelected({ ...target, folder_id: target.folder_id ?? full.folder_id })
+        await loadEmails()
+      } catch (e2) {
+        console.warn('open from global search', e2)
+      }
+    }
+    const handleSearchFull = (e) => {
+      const q = String(e.detail || '')
+      setSearch(q)
+      window.dispatchEvent(new CustomEvent('mm-module', { detail: 'mail' }))
+    }
+    window.addEventListener('mm-theme', bump)
+    window.addEventListener('mm-synced', bump)
+    window.addEventListener('mm-new-mail', newMail)
+    window.addEventListener('mm-rule-for-folder', ruleForFolder)
+    window.addEventListener('mm-open-mail', handleOpenMail)
+    window.addEventListener('mm-search-full', handleSearchFull)
+    return () => {
+      window.removeEventListener('mm-theme', bump); window.removeEventListener('mm-synced', bump)
+      window.removeEventListener('mm-new-mail', newMail); window.removeEventListener('mm-rule-for-folder', ruleForFolder)
+      window.removeEventListener('mm-open-mail', handleOpenMail); window.removeEventListener('mm-search-full', handleSearchFull)
+    }
+  }, [loadEmails, loadTree])
+
+  const actArchive = async (id) => {
+    const item = emails.find(it => (it.email?.id || it.id) === id)
+    const fromFolder = (item?.email || item)?.folder_id
+    await api.archive(id)
+    if (selected?.id === id) setSelected(null)
+    loadEmails(); loadTree()
+    if (fromFolder) showToast('Đã chuyển vào Lưu trữ', async () => { await api.move(id, fromFolder); loadEmails(); loadTree() })
+  }
+
+  const actArchiveLocal = async (e) => {
+    if (!confirm(`Lưu trữ "${e.subject || '(không có chủ đề)'}" về máy và xoá khỏi Exchange? File .eml lưu trong thư mục lưu trữ; thư vẫn xuất hiện trong danh sách để truy cập.`)) return
+    try {
+      const r = await api.archiveLocal(e.id)
+      showToast(`Đã lưu trữ về máy: ${r.path}`)
+    } catch (err) { showToast(`Lưu trữ thất bại: ${err.message}`) }
+    loadEmails(); loadTree()
+  }
+  const actUnarchive = async (e) => {
+    await api.unarchiveLocal(e.id)
+    showToast('Đã khôi phục về server — thư sẽ trở lại vị trí cũ')
+    loadEmails(); loadTree()
+  }
+  const actDelete = async (id) => {
+    await api.del(id)
+    if (selected?.id === id) setSelected(null)
+    loadEmails(); loadTree()
+    showToast('Đã chuyển vào Thùng rác', async () => { await api.restore(id); loadEmails(); loadTree() })
+  }
+
+  const actStar = async (id) => { await api.star(id); loadEmails() }
+  const actFlag = async (id, due) => { await api.flag(id, due); loadEmails() }
+  const actMove = async (id, folderId) => { await api.move(id, folderId); setSelected(null); loadEmails(); loadTree() }
+  const actRead = async (id, is_read) => { await api.markRead(id, is_read); loadEmails() }
+  const actCats = async (id, cats) => { await api.setCats(id, cats); loadEmails() }
+  const actReadAll = async () => { const r = await api.readAll(activeFolder.id); showToast(`Đã đánh dấu ${r.marked} thư là đã đọc`); loadEmails(); loadTree() }
+  const actTask = async () => { if (selected) { await api.emailToTask(selected.id); showToast('Đã tạo việc từ email — xem tab To Do') } }
+
+  const openSearchFolder = (sf) => { setActiveFolder({ id: sf.id, name: sf.name, unread: 0 }); setSelected(null) }
+  const deleteSearchFolder = async (id) => {
+    await api.deleteSearchFolder(id)
+    loadSf()
+    if (String(activeFolder?.id) === id) { const t = await api.folders(); setActiveFolder(t.tree.find(f => f.type === 'inbox') || null) }
+    loadEmails()
+  }
+
+  const actSelect = async (email) => {
+    setSelected(email)
+    if (!email.is_read) {
+      await api.markRead(email.id, true)
+      setEmails(prev => prev.map(it => {
+        const e = it.email || it
+        if (e.id !== email.id) return it
+        const patched = { ...e, is_read: true }
+        return it.email ? { ...it, email: patched } : patched
+      }))
+      loadTree()
+    }
+  }
+
+  // keyboard: j/k/enter/e/d/u/r/a/f handled globally here (list-scoped)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (['INPUT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable) return
+      if (compose || ctx) return
+      const list = emails.map(it => it.email || it)
+      const idx = selected ? list.findIndex(x => x.id === selected.id) : -1
+      const k = e.key.toLowerCase()
+      if (k === 'j' || e.key === 'ArrowDown') { e.preventDefault(); if (list[idx + 1]) actSelect(list[idx + 1]) }
+      else if (k === 'k' || e.key === 'ArrowUp') { e.preventDefault(); if (list[idx - 1]) actSelect(list[idx - 1]) }
+      else if (k === 'e' && selected) actArchive(selected.id)
+      else if ((k === 'd' || e.key === 'Delete') && selected) actDelete(selected.id)
+      else if (k === 'u' && e.shiftKey) actReadAll()
+      else if (k === 'u' && selected) actRead(selected.id, !selected.is_read)
+      else if (k === 'r' && selected) setCompose({ replyTo: selected, mode: 'reply' })
+      else if (k === 'a' && selected) setCompose({ replyTo: selected, mode: 'reply_all' })
+      else if (k === 'f' && selected) setCompose({ replyTo: selected, mode: 'forward' })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [emails, selected, compose, ctx, activeFolder])
+
+  const flatFolders = React.useMemo(() => {
+    const out = []
+    const walk = (nodes) => nodes.forEach(n => { out.push(n); if (n.children) walk(n.children) })
+    walk(tree); return out
+  }, [tree])
+
+  const catSub = (email) => (catMeta?.categories || []).map(c => ({
+    label: c, dot: catMeta?.colors?.[c],
+    onClick: () => {
+      const cur = Array.isArray(email.categories) ? email.categories : []
+      actCats(email.id, cur.includes(c) ? cur.filter(x => x !== c) : [...cur, c])
+    }
+  }))
+
+  const menuItems = (email) => [
+    { label: email.is_read ? 'Đánh dấu chưa đọc' : 'Đánh dấu đã đọc', icon: email.is_read ? Mail : MailOpen, onClick: () => actRead(email.id, !email.is_read) },
+    { sep: true },
+    { label: 'Trả lời', icon: CornerUpLeft, onClick: () => setCompose({ replyTo: email, mode: 'reply' }) },
+    { label: 'Trả lời tất cả', icon: CornerUpRight, onClick: () => setCompose({ replyTo: email, mode: 'reply_all' }) },
+    { label: 'Chuyển tiếp', icon: Share2, onClick: () => setCompose({ replyTo: email, mode: 'forward' }) },
+    { sep: true },
+    { label: 'Copy', icon: Copy, onClick: () => copyMail(email) },
+    { label: 'Tìm theo người gửi này', icon: Search, onClick: () => setSearch(`from:${senderEmail(email) || senderName(email)}`) },
+    { label: 'Quy tắc cho người gửi này…', icon: UserPlus, onClick: () => setRuleFor({ ...email, from: senderEmail(email) }) },
+    { sep: true },
+    { label: 'Cờ theo dõi', icon: Flag, submenu: [
+      { label: 'Hôm nay', onClick: () => { const d = new Date(); d.setHours(17, 0, 0, 0); actFlag(email.id, d.toISOString()) } },
+      { label: 'Tuần này', onClick: () => actFlag(email.id, new Date(Date.now() + 5 * 864e5).toISOString()) },
+      { label: 'Bỏ cờ', onClick: () => actFlag(email.id, null) },
+    ] },
+    { label: 'Phân loại', icon: Tag, submenu: catSub(email) },
+    { label: 'Di chuyển tới', icon: FolderInput, submenu: flatFolders.filter(f => f.id !== email.folder_id).map(f => ({ label: f.name, onClick: () => actMove(email.id, f.id) })) },
+    { label: 'Tạo quy tắc từ thư này…', icon: Zap, onClick: () => setRuleFor(email) },
+    { sep: true },
+    { label: email.archived_local ? 'Khôi phục về server' : 'Lưu trữ (E)', icon: Archive,
+      onClick: () => email.archived_local ? actUnarchive(email) : actArchive(email.id) },
+    { label: 'Lưu trữ về máy (.eml)', icon: FolderInput, onClick: () => actArchiveLocal(email) },
+    { label: 'Xóa', icon: Trash2, danger: true, onClick: () => actDelete(email.id) },
+    { sep: true },
+    { label: 'Đánh dấu tất cả đã đọc', icon: CheckCheck, onClick: actReadAll },
+  ]
+
+  const itemInfo = `${emails.length} hội thoại · ${activeFolder?.name || ''} · chuột phải thư để có menu nhanh`
+
+  return (
+    <Group id="mm-mail" key={`mm-mail-${pane}`} orientation="horizontal" className="flex-1 min-w-0" defaultLayout={outerLayout.defaultLayout} onLayoutChanged={outerLayout.onLayoutChanged}>
+      <Panel id="folders" defaultSize={232} minSize={180} maxSize={340} className="min-w-0">
+        <FolderTree tree={tree} activeFolderId={activeFolder?.id}
+          onCompose={() => setCompose({ mode: 'new' })}
+          searchFolders={searchFolders} onOpenSearchFolder={openSearchFolder}
+          onDeleteSearchFolder={deleteSearchFolder} onNewSearchFolder={() => setSfModal(true)}
+          onSelect={(f) => { setActiveFolder(f); setSelected(null) }} onChanged={loadTree} />
+      </Panel>
+      <Separator className="mm-handle" />
+      <Panel id="main" minSize={300}>
+        <Group id="mm-main" key={`mm-main-${pane}`} orientation={pane === 'bottom' ? 'vertical' : 'horizontal'} className="h-full w-full" defaultLayout={innerLayout.defaultLayout} onLayoutChanged={innerLayout.onLayoutChanged}>
+          <Panel id="list" defaultSize={pane === 'bottom' ? '55%' : 368} minSize={pane === 'bottom' ? '30%' : 280} className="min-w-0 min-h-0">
+            <EmailList
+              emails={emails} activeFolder={activeFolder} selectedEmailId={selected?.id}
+              onEmailSelect={actSelect} onEmailOpen={(e) => pane === 'off' && setReadModal(true)}
+              onArchive={actArchive} onDelete={actDelete} onStar={actStar} onFlag={actFlag}
+              onMove={actMove} onMarkRead={actRead} onCategory={actCats}
+              onContext={async (email, x, y) => { await actSelect(email); setCtx({ email, x, y }) }}
+              catMeta={catMeta} density={density}
+              onRefresh={() => { loadEmails(); loadTree() }}
+              onMarkAllRead={actReadAll}
+              conversationView={conversation} onToggleConversation={() => setConversation(!conversation)}
+              searchTerm={search} onSearchChange={setSearch}
+              selectedCategory={category} onCategoryChange={setCategory}
+              loading={loading} itemInfo={itemInfo}
+            />
+          </Panel>
+          {pane !== 'off' && <>
+            <Separator className={pane === 'bottom' ? 'mm-handle mm-handle-h' : 'mm-handle'} />
+            <Panel id="detail" minSize={pane === 'bottom' ? '25%' : 300} className="min-w-0 min-h-0">
+              {selected && (conversation || threadView) && selected.thread_id ? (
+                <ThreadView
+                  key={selected.thread_id}
+                  threadId={selected.thread_id}
+                  folders={tree}
+                  onArchive={actArchive} onDelete={actDelete} onStar={actStar}
+                  onReply={(mode, m) => setCompose({ replyTo: m || selected, mode })}
+                  onEmailOpen={() => pane === 'off' && setReadModal(true)}
+                />
+              ) : (
+              <EmailDetail
+                email={selected} folders={tree}
+                onArchive={actArchive} onDelete={actDelete} onStar={actStar} onFlag={actFlag}
+                onMove={actMove} onCreateTask={actTask}
+                onReply={(mode) => setCompose({ replyTo: selected, mode })}
+                onRefresh={() => { loadEmails(); loadTree() }}
+              />
+              )}
+            </Panel>
+          </>}
+        </Group>
+      </Panel>
+      {readModal && pane === 'off' && selected && (
+        <ReadingModal email={selected} folders={tree} onClose={() => setReadModal(false)}
+          onArchive={actArchive} onDelete={actDelete} onStar={actStar} onFlag={actFlag}
+          onMove={actMove} onCreateTask={actTask}
+          onReply={(mode) => { setReadModal(false); setCompose({ replyTo: selected, mode }) }}
+          onRefresh={() => { loadEmails(); loadTree() }} />
+      )}
+      {compose && (
+        <ComposeModal
+          replyTo={compose.replyTo} mode={compose.mode || 'new'} user={user}
+          onClose={() => setCompose(false)}
+          onSent={() => { setCompose(false); loadEmails(); loadTree() }}
+        />
+      )}
+      {ctx && <ContextMenu x={ctx.x} y={ctx.y} items={menuItems(ctx.email)} onClose={() => setCtx(null)} />}
+      {sfModal && <SearchFolderModal folders={tree} onClose={() => setSfModal(false)} onCreated={() => { loadSf() }} />}
+      {ruleFor && (
+        <RuleModal folders={tree} categories={catMeta} initial={ruleFor}
+          onClose={() => setRuleFor(null)}
+          onCreated={async () => { const r = await api.runRules(); showToast(`Đã chạy quy tắc — khớp ${r.messages_matched} thư`); loadEmails(); loadTree() }} />
+      )}
+      {ruleFolder && (
+        <RuleModal folders={tree} categories={catMeta} targetFolder={ruleFolder}
+          onClose={() => setRuleFolder(null)}
+          onCreated={async () => { setRuleFolder(null); const r = await api.runRules(); showToast(`Đã tạo quy tắc — khớp ${r.messages_matched} thư`); loadEmails(); loadTree() }} />
+      )}
+      {toast && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-dark-surface border border-dark-border rounded-lg shadow-2xl px-4 py-2.5 flex items-center gap-3 z-[60]">
+          <span className="text-sm text-ink">{toast.msg}</span>
+          {toast.action && <button onClick={toast.action} className="text-sm text-primary font-medium hover:underline">Hoàn tác</button>}
+        </div>
+      )}
+    </Group>
+  )
+}

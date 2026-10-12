@@ -1,0 +1,30 @@
+# Node
+node_modules/
+**/dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+backend/.venv/
+
+# Build artifacts — runtime bundle nặng, phát hành qua GitHub Releases
+build/python-linux-x64/
+build/python-embed-amd64/
+build/get-pip.py
+
+# Giữ lại frontend đã build để chạy nhanh
+!**/build/frontend-dist/**
+
+# Secret — KHÔNG BAO GIỒ commit
+.env
+.env.*
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
